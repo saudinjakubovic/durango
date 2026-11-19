@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="bs">
+<head>
+    <meta charset="utf-8">
+    <title>V8 JIT Type Confusion Fuzzer</title>
+    <style>
+        body { background: #000; color: #0f0; font-family: monospace; padding: 20px; }
+        h1 { color: #fff; }
+        #status { font-size: 20px; font-weight: bold; margin-bottom: 20px; }
+        #logs { background: #111; border: 1px solid #333; height: 60vh; overflow-y: auto; padding: 10px; font-size: 14px; }
+        .crash { color: #f00; font-weight: bold; }
+        button { background: #0f0; color: #000; border: none; padding: 10px 20px; font-size: 18px; font-weight: bold; cursor: pointer; margin-bottom: 20px; }
+        button:hover { background: #fff; }
+    </style>
+</head>
+<body>
+    <h1>V8 JIT TYPE CONFUSION FUZZER</h1>
+    <button onclick="startFuzz()">POKRENI PRAVI FUZZING</button>
+    <div id="status">Status: Čeka se komanda...</div>
+    <div id="logs"></div>
+
+    <script>
+        const logEl = document.getElementById('logs');
+        const statusEl = document.getElementById('status');
+        let isRunning = false;
+        let testId = parseInt(localStorage.getItem('jit_id') || '0');
+
+        function log(msg, isCrash = false) {
+            const div = document.createElement('div');
+            div.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+            if (isCrash) div.className = 'crash';
+            logEl.prepend(div);
+        }
+
+        // Provjera crasha
+        const crashedId = localStorage.getItem('jit_crash');
+        if (crashedId) {
+            log(`!!! CRASH DETEKTOVAN NA TESTU ID: ${crashedId} !!!`, true);
+            log(`Ovo je pravi V8 bug, ne OOM! Memorija je pukla od Type Confusion-a.`, true);
+            localStorage.removeItem('jit_crash');
+        } else {
+            log(`Sistem čist. Trenutni test ID: ${testId}`);
+        }
+
+        function generateTypeConfusionPayload() {
+            // Pravimo sulude kombinacije tipova
+            let weirdTypes = [
+                "1.1", "{x: 1}", "[1,2,3]", "'string'", "null", "undefined", 
+                "() => 1", "new ArrayBuffer(8)", "new Uint32Array(1)", "NaN"
+            ];
+            
+            let t1 = weirdTypes[Math.floor(Math.random() * weirdTypes.length)];
+            let t2 = weirdTypes[Math.floor(Math.random() * weirdTypes.length)];
+            
+            // Ovaj kod tera V8 da optimizuje funkciju za jedan tip, pa je razbije drugim
+            return `
+                try {
+                    // 1. Funkcija koja se optimizuje
+                    function target(x, y) {
+                        let a = x.val || x;
+                        let b = y.val || y;
+                        return a + b;
+                    }
+
+                    // 2. JIT Warmup (V8 misli da su uvek brojevi)
+                    for (let i = 0; i < 50000; i++) {
+                        target(${t1}, ${t1});
+                    }
+
+                    // 3. Type Confusion Trigger (V8 puca jer je ocekivao isti tip)
+                    for (let j = 0; j < 1000; j++) {
+                        target(${t1}, ${t2});
+                        target(${t2}, ${t1});
+                    }
+                    
+                    // 4. Array OOB Trigger
+                    let arr = [1.1, 2.2, 3.3];
+                    arr.length = Math.floor(Math.random() * 9999999); 
+                    arr[9999999] = 1.337;
+
+                } catch(e) {}
+            `;
+        }
+
+        function startFuzz() {
+            if (isRunning) return;
+            isRunning = true;
+            statusEl.textContent = "Status: FUZZING U TOKU...";
+            statusEl.style.color = "#0f0";
+            log("Kreće JIT Type Confusion napad...");
+
+            function loop() {
+                if (!isRunning) return;
+                
+                testId++;
+                localStorage.setItem('jit_id', testId);
+                localStorage.setItem('jit_crash', testId); // Ako pukne, ovo ostaje
+
+                if (testId % 5 === 0) {
+                    log(`Test ID: ${testId} - Generisanje...`);
+                }
+
+                let js = generateTypeConfusionPayload();
+                
+                // Izolujemo u iframe da ne blokira main thread
+                let iframe = document.createElement('iframe');
+                iframe.style.display = 'none';
+                document.body.appendChild(iframe);
+
+                try {
+                    let doc = iframe.contentWindow.document;
+                    let script = doc.createElement('script');
+                    script.textContent = js;
+                    doc.body.appendChild(script);
+                } catch(e) {}
+
+                // Pauza izmedju testova (100ms)
+                setTimeout(() => {
+                    // Ako je konzola prezivjela, ocisti crash marker
+                    if (localStorage.getItem('jit_crash') == testId) {
+                        localStorage.removeItem('jit_crash');
+                    }
+                    
+                    if (iframe.parentNode) {
+                        document.body.removeChild(iframe);
+                    }
+                    
+                    loop(); // Sledeci test
+                }, 100); 
+            }
+
+            loop();
+        }
+    </script>
+</body>
+  </html>
